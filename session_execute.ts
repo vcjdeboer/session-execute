@@ -27,7 +27,7 @@
  * @module
  */
 import { z } from "npm:zod@4";
-import { parse as parseYaml } from "npm:yaml@2.8.3";
+import { parse as parseYaml } from "jsr:@std/yaml@1.1.1";
 
 /** Definition-level config: nix + the R env + how the armed recorder ships. */
 const GlobalArgsSchema = z.object({
@@ -342,7 +342,7 @@ function cap(s: string): string {
 /** The session-execute model definition. */
 export const model = {
   type: "@vcjdeboer/session-execute",
-  version: "2026.06.21.3",
+  version: "2026.06.21.4",
   globalArguments: GlobalArgsSchema,
   resources: {
     "execution": {
