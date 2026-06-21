@@ -27,7 +27,7 @@
  * @module
  */
 import { z } from "npm:zod@4";
-import { parse as parseYaml } from "npm:yaml@2.5.0";
+import { parse as parseYaml } from "npm:yaml@2.8.3";
 
 /** Definition-level config: nix + the R env + how the armed recorder ships. */
 const GlobalArgsSchema = z.object({
