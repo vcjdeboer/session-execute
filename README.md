@@ -39,7 +39,7 @@ suite lives under the current repo — override per-definition for absolute path
 - [`@vcjdeboer/session-record`](https://github.com/vcjdeboer/session-record) — the ledger it writes into
 - [`@vcjdeboer/session-witness`](https://github.com/vcjdeboer/session-witness) — seal the recorded session
 
-Requires the R recorder (`swamprecord`) and an R env flake on the host.
+Requires the R recorder ([`swamprecord`](https://github.com/vcjdeboer/swamprecord)) and the R env flake from [`session-suite`](https://github.com/vcjdeboer/session-suite) — place `r-env/` at `./r-env` or set `SWAMP_R_ENV`.
 
 ## License
 
