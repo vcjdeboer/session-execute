@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@vcjdeboer/session-execute"
-version: "2026.06.21.2"
+version: "2026.06.21.3"
 description: "Headless runtime for governed analysis templates: run a filled template's code in a pinned nix R environment with the swamprecord recorder armed, writing the same typed provenance a live session would, then verify the run against the template's swamp.returns contract. The perform member of the swamp session-* suite."
 repository: "https://github.com/vcjdeboer/session-execute"
 paths:

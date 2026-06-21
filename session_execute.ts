@@ -342,7 +342,7 @@ function cap(s: string): string {
 /** The session-execute model definition. */
 export const model = {
   type: "@vcjdeboer/session-execute",
-  version: "2026.06.21.2",
+  version: "2026.06.21.3",
   globalArguments: GlobalArgsSchema,
   resources: {
     "execution": {
