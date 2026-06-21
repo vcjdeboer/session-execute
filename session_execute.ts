@@ -168,8 +168,12 @@ export function buildEpilogue(
     const okExpr = checks.length ? checks.join(" && ") : "TRUE";
     lines.push(
       `.swr_rows <- c(.swr_rows, tryCatch(` +
-        `paste(${rq(name)}, ${rq(bind)}, isTRUE(${okExpr}), class(${bind})[1], sep = "\\t"), ` +
-        `error = function(e) paste(${rq(name)}, ${rq(bind)}, "FALSE", "<unresolved>", sep = "\\t")))`,
+        `paste(${rq(name)}, ${
+          rq(bind)
+        }, isTRUE(${okExpr}), class(${bind})[1], sep = "\\t"), ` +
+        `error = function(e) paste(${rq(name)}, ${
+          rq(bind)
+        }, "FALSE", "<unresolved>", sep = "\\t")))`,
     );
   }
   lines.push(`writeLines(.swr_rows, ${rq(verifyPath)})`);
@@ -190,7 +194,9 @@ const GRACE_MS = 2_000;
 export async function runRStdin(
   g: GlobalArgs,
   driver: string,
-): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
+): Promise<
+  { stdout: string; stderr: string; code: number; timedOut: boolean }
+> {
   let child: Deno.ChildProcess;
   try {
     child = new Deno.Command(g.nixBin, {
@@ -266,27 +272,48 @@ export async function runRscriptNix(
   g: GlobalArgs,
   rPackage: string,
   expr: string,
-): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
+): Promise<
+  { stdout: string; stderr: string; code: number; timedOut: boolean }
+> {
   let child: Deno.ChildProcess;
   try {
     child = new Deno.Command(g.nixBin, {
-      args: ["shell", `${g.flakeRef}#${rPackage}`, "--impure", "--command", "Rscript", "-e", expr],
+      args: [
+        "shell",
+        `${g.flakeRef}#${rPackage}`,
+        "--impure",
+        "--command",
+        "Rscript",
+        "-e",
+        expr,
+      ],
       stdout: "piped",
       stderr: "piped",
-      env: { ...Deno.env.toObject(), SWAMP_REPO_DIR: g.repoDir, COLUMNS: "80", LINES: "24" },
+      env: {
+        ...Deno.env.toObject(),
+        SWAMP_REPO_DIR: g.repoDir,
+        COLUMNS: "80",
+        LINES: "24",
+      },
     }).spawn();
   } catch (cause) {
     throw new Error(
-      `Failed to spawn nix at '${g.nixBin}': ${cause instanceof Error ? cause.message : String(cause)}`,
+      `Failed to spawn nix at '${g.nixBin}': ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
     );
   }
   let timedOut = false;
   let killTimer: number | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
-    try { child.kill("SIGTERM"); } catch { /* exited */ }
+    try {
+      child.kill("SIGTERM");
+    } catch { /* exited */ }
     killTimer = setTimeout(() => {
-      try { child.kill("SIGKILL"); } catch { /* exited */ }
+      try {
+        child.kill("SIGKILL");
+      } catch { /* exited */ }
     }, GRACE_MS);
   }, g.timeoutMs);
   let output: Deno.CommandOutput;
@@ -297,12 +324,19 @@ export async function runRscriptNix(
     if (killTimer !== undefined) clearTimeout(killTimer);
   }
   const dec = new TextDecoder();
-  return { stdout: dec.decode(output.stdout), stderr: dec.decode(output.stderr), code: output.code, timedOut };
+  return {
+    stdout: dec.decode(output.stdout),
+    stderr: dec.decode(output.stderr),
+    code: output.code,
+    timedOut,
+  };
 }
 
 const CAP = 8_000; // chars of stdout/stderr stored
 function cap(s: string): string {
-  return s.length > CAP ? s.slice(0, CAP) + `\n...[truncated ${s.length - CAP} chars]` : s;
+  return s.length > CAP
+    ? s.slice(0, CAP) + `\n...[truncated ${s.length - CAP} chars]`
+    : s;
 }
 
 /** The session-execute model definition. */
@@ -312,13 +346,15 @@ export const model = {
   globalArguments: GlobalArgsSchema,
   resources: {
     "execution": {
-      description: "Result of running a filled template headless: status + returns-contract verification",
+      description:
+        "Result of running a filled template headless: status + returns-contract verification",
       schema: ExecResultSchema,
       lifetime: "infinite",
       garbageCollection: 50,
     },
     "targets": {
-      description: "Result of a harvested targets run (tar_make + tar_meta -> session-record)",
+      description:
+        "Result of a harvested targets run (tar_make + tar_meta -> session-record)",
       schema: TargetsResultSchema,
       lifetime: "infinite",
       garbageCollection: 50,
@@ -338,7 +374,9 @@ export const model = {
             instanceName: string,
             data: unknown,
           ) => Promise<{ version: number }>;
-          logger: { info: (msg: string, props?: Record<string, unknown>) => void };
+          logger: {
+            info: (msg: string, props?: Record<string, unknown>) => void;
+          };
         },
       ): Promise<{ dataHandles: unknown[] }> => {
         const g = context.globalArgs;
@@ -353,7 +391,9 @@ export const model = {
         // the filled file (byte-identical swamp block after a governed fill).
         let returns = fm.swamp?.returns ?? {};
         if (args.templatePath) {
-          const tText = await Deno.readTextFile(args.templatePath).catch(() => "");
+          const tText = await Deno.readTextFile(args.templatePath).catch(() =>
+            ""
+          );
           if (tText) {
             const tfm = (parseYaml(splitQmd(tText).yaml) ?? {}) as {
               swamp?: { returns?: Record<string, ReturnSpec> };
@@ -372,7 +412,9 @@ export const model = {
         const driver = [
           // sync ship: headless R wipes tempdir() on exit, so async record
           // children would race the cleanup and read empty --input files.
-          `options(swamprecord.repo = ${rq(g.repoDir)}, swamprecord.swamp = ${rq(g.swampBin)}, swamprecord.def = ${rq(g.recordDef)}, swamprecord.sync = TRUE)`,
+          `options(swamprecord.repo = ${rq(g.repoDir)}, swamprecord.swamp = ${
+            rq(g.swampBin)
+          }, swamprecord.def = ${rq(g.recordDef)}, swamprecord.sync = TRUE)`,
           // fixed width so cli/tidyverse never probes the absent tty
           `options(width = 80, cli.width = 80)`,
           buildParamsPreamble(params),
@@ -384,7 +426,12 @@ export const model = {
 
         context.logger.info(
           "Running {n} chunk(s) of {filled} headless in {ref} (recorder -> {def})",
-          { n: chunks.length, filled: args.filledPath, ref: `${g.flakeRef}#${g.rPackage}`, def: g.recordDef },
+          {
+            n: chunks.length,
+            filled: args.filledPath,
+            ref: `${g.flakeRef}#${g.rPackage}`,
+            def: g.recordDef,
+          },
         );
 
         const r = await runRStdin(g, driver);
@@ -397,11 +444,18 @@ export const model = {
         await Deno.remove(verifyPath).catch(() => {});
 
         // Parse verification rows: name<TAB>bind<TAB>ok<TAB>class
-        const observed = new Map<string, { ok: boolean; cls: string; bind: string }>();
+        const observed = new Map<
+          string,
+          { ok: boolean; cls: string; bind: string }
+        >();
         for (const line of verifyText.split("\n")) {
           if (!line.trim()) continue;
           const [name, bind, ok, cls] = line.split("\t");
-          observed.set(name, { ok: ok === "TRUE", cls: cls ?? "", bind: bind ?? "" });
+          observed.set(name, {
+            ok: ok === "TRUE",
+            cls: cls ?? "",
+            bind: bind ?? "",
+          });
         }
 
         const returnResults = Object.entries(returns).map(([name, spec]) => {
@@ -417,9 +471,13 @@ export const model = {
 
         // status: the driver reached and wrote the epilogue (verification file
         // had rows) => ok. valid: every declared return held.
-        const reachedEpilogue = observed.size > 0 || Object.keys(returns).length === 0;
-        const status: "ok" | "error" = reachedEpilogue && r.code === 0 ? "ok" : "error";
-        const valid = returnResults.length > 0 && returnResults.every((x) => x.ok);
+        const reachedEpilogue = observed.size > 0 ||
+          Object.keys(returns).length === 0;
+        const status: "ok" | "error" = reachedEpilogue && r.code === 0
+          ? "ok"
+          : "error";
+        const valid = returnResults.length > 0 &&
+          returnResults.every((x) => x.ok);
 
         const handle = await context.writeResource("execution", "result", {
           template: args.templatePath,
@@ -455,7 +513,11 @@ export const model = {
         args: z.infer<typeof RunTargetsArgsSchema>,
         context: {
           globalArgs: GlobalArgs;
-          writeResource: (s: string, i: string, d: unknown) => Promise<{ version: number }>;
+          writeResource: (
+            s: string,
+            i: string,
+            d: unknown,
+          ) => Promise<{ version: number }>;
           logger: { info: (m: string, p?: Record<string, unknown>) => void };
         },
       ): Promise<{ dataHandles: unknown[] }> => {
@@ -464,12 +526,18 @@ export const model = {
         try {
           await Deno.stat(`${args.pipelineDir.replace(/\/+$/, "")}/_targets.R`);
         } catch {
-          throw new Error(`run-targets: no _targets.R in pipelineDir '${args.pipelineDir}'`);
+          throw new Error(
+            `run-targets: no _targets.R in pipelineDir '${args.pipelineDir}'`,
+          );
         }
         const summaryPath = await Deno.makeTempFile({ suffix: ".tsv" });
         const expr = `source(${rq(g.harvestPath)}); ` +
-          `harvest_targets(dir=${rq(args.pipelineDir)}, swamp=${rq(g.swampBin)}, ` +
-          `def=${rq(args.recordDef)}, repo=${rq(g.repoDir)}, summaryPath=${rq(summaryPath)})`;
+          `harvest_targets(dir=${rq(args.pipelineDir)}, swamp=${
+            rq(g.swampBin)
+          }, ` +
+          `def=${rq(args.recordDef)}, repo=${rq(g.repoDir)}, summaryPath=${
+            rq(summaryPath)
+          })`;
 
         context.logger.info("Harvesting targets pipeline {dir} -> {def}", {
           dir: args.pipelineDir,
@@ -481,12 +549,15 @@ export const model = {
           await Deno.remove(summaryPath).catch(() => {});
           throw new Error(`run-targets timed out after ${g.timeoutMs}ms`);
         }
-        const summary = (await Deno.readTextFile(summaryPath).catch(() => "")).trim();
+        const summary = (await Deno.readTextFile(summaryPath).catch(() => ""))
+          .trim();
         await Deno.remove(summaryPath).catch(() => {});
         // Infra failure (nix can't build the env, source() error, R crash before the
         // harvester wrote its summary) is NOT an empty pipeline: surface it.
         if (r.code !== 0 && !summary) {
-          throw new Error(`run-targets harvester failed (exit ${r.code}): ${cap(r.stderr)}`);
+          throw new Error(
+            `run-targets harvester failed (exit ${r.code}): ${cap(r.stderr)}`,
+          );
         }
         const [n, ok, err] = summary.split("\t").map((x) => Number(x) || 0);
         const targets = n || 0, okN = ok || 0, errN = err || 0;
@@ -496,8 +567,9 @@ export const model = {
           ? "partial"
           : "ok";
 
-        const instance = (args.pipelineDir.replace(/\/+$/, "").split("/").pop() || "targets")
-          .replace(/[^A-Za-z0-9_-]/g, "_");
+        const instance =
+          (args.pipelineDir.replace(/\/+$/, "").split("/").pop() || "targets")
+            .replace(/[^A-Za-z0-9_-]/g, "_");
         const handle = await context.writeResource("targets", instance, {
           pipelineDir: args.pipelineDir,
           status,
