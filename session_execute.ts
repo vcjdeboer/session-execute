@@ -361,7 +361,7 @@ export const model = {
     },
   },
   methods: {
-    "run": {
+    run: {
       description:
         "Run a filled template's R code headless in the nix session (recorder armed) and verify it against the template's swamp.returns contract",
       arguments: RunArgsSchema,
