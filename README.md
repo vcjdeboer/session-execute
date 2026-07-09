@@ -1,91 +1,41 @@
 # @vcjdeboer/session-execute
 
-The **perform** member of the swamp `session-*` suite — a headless **runtime**
-for governed analysis templates. It runs a filled template's code in a pinned
-nix R environment with the [`swamprecord`](https://github.com/vcjdeboer/swamprecord)
-recorder **armed**, so the same typed provenance a live RStudio/Jupyter session
-would capture is written headlessly, then verifies the run against the
-template's `swamp.returns` contract.
+**The headless runtime of the [`session-*`](https://github.com/vcjdeboer/session-record) suite — run a governed template, or *replay* a captured session, deterministically.**
 
-In other words: take a template that
-[`session-write`](https://github.com/vcjdeboer/session-write) has filled and
-validated, run it for real, record everything it did, and assert it produced the
-objects it promised — all without a human at the keyboard.
+Part of the session-* suite for provenance and governed authoring in interactive
+data science, built on [swamp](https://github.com/swamp-club/swamp). This is the
+**Perform** step: it runs analysis code headless and either records the same typed
+provenance a live session would, or judges a fresh run against a frozen contract.
 
-## Installation
+## Methods
+
+| Method | Runs |
+| --- | --- |
+| `run` | a filled `.qmd` template's R code headless in a pinned **nix** R env, recorder armed, then verifies it against the template's `swamp.returns` contract (e.g. *the result inherits `lm`*) |
+| `run-targets` | a `targets` pipeline (`tar_make`), harvesting its native `tar_meta` provenance into `session-record` |
+| `run-notebook` | a filled `.ipynb` headless via **papermill in the locked conda/Docker env**, verifying `swamp.returns` with an appended Python check cell — the Python/ipynb analog of `run` |
+| `replay` | faithfully re-runs a frozen **MatchSpec**'s captured R code in the locked env (nix preferred, docker fallback) and judges the fresh run against the recorded values via per-return tolerance rules |
+
+## Replaying a foreign session
+
+`run-notebook` also drives **[session-ingest](https://github.com/vcjdeboer/session-ingest)**
+replays: it prepends a captured session's used **skills** and a **host-replay shim**
+that serves recorded `host.*` calls offline (`hostMode: replay`) — or, in `hybrid`
+mode, falls through to the *live* public API a Claude Science tool wraps (e.g.
+`query_genes → mygene.info`) only for calls the recording can't answer. So a
+Claude Science analysis can be reproduced *exactly*, or *extended* with live data.
+
+## Install
 
 ```sh
 swamp extension pull @vcjdeboer/session-execute
 swamp model create @vcjdeboer/session-execute executor
 ```
 
-## Usage
-
-Run a filled `.qmd` template headless (records land in your `session-record`
-instance, `rec`):
-
-```sh
-swamp model method run executor run \
-    --input filledPath=cars.qmd \
-    --input templatePath=lm-report.qmd
-```
-
-The `run` method writes an `execution { status, valid, returns[] }` resource —
-`valid` is the result of checking the realized objects against the template's
-`swamp.returns` contract (e.g. *the model inherits `lm`*, *the figure inherits
-`ggplot`*). To run a `targets` pipeline instead and harvest one record per
-target:
-
-```sh
-swamp model method run executor run-targets \
-    --input pipelineDir=targets-lm
-```
-
-## Methods
-
-- **`run`** — run a filled `.qmd` template's R chunks headless with the recorder
-  armed; verify `swamp.returns`. Writes `execution { status, valid, returns[] }`.
-- **`run-targets`** — run a `targets` pipeline and harvest its native provenance
-  (one `session-record` entry per target). Writes
-  `targets { status, targets, ok, errors }`.
-
-## Configuration
-
-It shells out to nix, R, swamp, and the swamprecord hook, so its definition-level
-global args point at those. Defaults assume the binaries are on `PATH` and the
-suite lives under the current repo — override per-definition for absolute paths:
-
-| arg | default | purpose |
-| --- | --- | --- |
-| `nixBin` / `swampBin` | `nix` / `swamp` | binaries (on PATH) |
-| `flakeRef` | `path:./r-env` | the R env flake (see r-env/flake.nix) |
-| `hookPath` / `harvestPath` | `./swamprecord/...` | the recorder loader + targets harvester |
-| `repoDir` | `.` | the swamp repo the recorder writes into |
-| `recordDef` | `rec` | the `session-record` instance |
-| `timeoutMs` | `300000` | kill a run that exceeds this |
-
-## How it works
-
-`run` parses the template's `params:` into a preamble, extracts the R chunks,
-`source()`s the swamprecord hook to arm the recorder, and runs the chunks inside
-`nix shell <flakeRef>#rEnv` so the R toolchain is pinned and reproducible. The
-recorder ships one record per top-level expression (synchronously, because a
-headless R wipes its tempdir on exit). A generated epilogue then evaluates the
-`swamp.returns` contract against the live bindings and reports `valid`.
-`run-targets` swaps the REPL recorder for a harvester: `tar_make()` runs each
-target in its own subprocess, and the harvester reads targets' native
-`tar_meta` / `tar_network` provenance into the same ledger.
-
-## Part of the session-* suite
-
-- [`@vcjdeboer/session-write`](https://github.com/vcjdeboer/session-write) — fill + validate a template
-- [`@vcjdeboer/session-record`](https://github.com/vcjdeboer/session-record) — the ledger it writes into
-- [`@vcjdeboer/session-witness`](https://github.com/vcjdeboer/session-witness) — seal the recorded session
-
-Requires the R recorder ([`swamprecord`](https://github.com/vcjdeboer/swamprecord))
-and the R env flake from [`session-suite`](https://github.com/vcjdeboer/session-suite) —
-place `r-env/` at `./r-env` or set `SWAMP_R_ENV`.
+Configure the env via global arguments (`nixBin`, `flakeRef`, `rPackage`, …) in the
+local model definition; portable defaults ship with the type.
 
 ## License
 
-MIT — see LICENSE.md.
+See [LICENSE.md](./LICENSE.md). MIT. Part of a swamp workspace; each component is
+independently installable.

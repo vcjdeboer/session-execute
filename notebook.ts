@@ -1,0 +1,467 @@
+/**
+ * @vcjdeboer/session-execute — notebook.ts
+ *
+ * The `run-notebook` method: run a filled `.ipynb` HEADLESS in the locked
+ * conda/Docker env (papermill in micromamba) and verify it against the template's
+ * `swamp.returns` contract — the Python/ipynb analog of the R/qmd `run`. Pure
+ * helpers (verify-cell codegen, notebook assembly, verdict parsing) unit-test
+ * without a runtime; the method takes an injected docker runner so it too
+ * unit-tests via stubs. The real papermill-in-docker run is integration-tested.
+ *
+ * @module
+ */
+import { z } from "npm:zod@4";
+
+/** One declared Python return and how to verify it (mirrors R's inherits/through_origin). */
+export interface PyReturnSpec {
+  /** The notebook variable to check (default = the return name). */
+  bind?: string;
+  /** Fully-qualified class, e.g. "sklearn.linear_model.LinearRegression". */
+  isinstance?: string;
+  /** Attributes that must be present (e.g. ["coef_"] for a fitted estimator). */
+  attrs?: string[];
+  desc?: string;
+}
+
+/** Python string literal (double-quoted, JSON-compatible escapes). */
+function pystr(v: string): string {
+  return JSON.stringify(v);
+}
+
+/** Split "a.b.C" into module "a.b" and class "C". */
+function splitQualified(fq: string): { module: string; cls: string } {
+  const i = fq.lastIndexOf(".");
+  return i < 0
+    ? { module: "", cls: fq }
+    : { module: fq.slice(0, i), cls: fq.slice(i + 1) };
+}
+
+/**
+ * Generate the appended Python verification cell: for each declared return,
+ * assert it against the live notebook namespace (isinstance + attrs), then write
+ * `name\tTRUE|FALSE\t<observed type>` rows to `verifyPath`. Each return is wrapped
+ * so an unbound name or failing check writes FALSE rather than crashing the cell.
+ * A return with no checks is a presence check (TRUE iff the name is bound).
+ */
+export function buildVerifyCell(
+  returns: Record<string, PyReturnSpec>,
+  verifyPath: string,
+): string {
+  const lines: string[] = ["_rows = []"];
+  for (const [name, spec] of Object.entries(returns)) {
+    const bind = spec.bind ?? name;
+    const checks: string[] = [];
+    if (spec.isinstance) {
+      const { module, cls } = splitQualified(spec.isinstance);
+      checks.push(
+        `isinstance(_b, getattr(__import__("importlib").import_module(${
+          pystr(module)
+        }), ${pystr(cls)}))`,
+      );
+    }
+    for (const a of spec.attrs ?? []) checks.push(`hasattr(_b, ${pystr(a)})`);
+    const okExpr = checks.length ? checks.join(" and ") : "True";
+    lines.push(
+      "try:",
+      `    _b = ${bind}`,
+      `    _ok = bool(${okExpr})`,
+      `    _obs = type(_b).__name__`,
+      "except Exception:",
+      `    _ok, _obs = False, "<unresolved>"`,
+      `_rows.append(${
+        pystr(name)
+      } + "\\t" + ("TRUE" if _ok else "FALSE") + "\\t" + _obs)`,
+    );
+  }
+  lines.push(
+    `with open(${pystr(verifyPath)}, "w") as _f:`,
+    `    _f.write("\\n".join(_rows) + "\\n")`,
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Generate the prepended host-replay shim cell: define a generic `host` object
+ * that replays ANY recorded host method from `hostCallsPath` (a JSON list of
+ * `{method, args, response|__ref__, isError, error}` records, in call order).
+ *
+ * Method-agnostic — `host.<method>(*args, **kwargs)` canonicalizes to the recorded
+ * `args_json` shape (mcp: `[server, tool, params]`; generic: positional args then a
+ * kwargs dict) and looks up the response by `(method, args)` with sorted dict keys
+ * so order doesn't matter. Duplicate identical calls are consumed in record order.
+ * A call with no recording raises `UnrecordedHostCall`; a recorded error re-raises;
+ * a `__ref__` response is loaded from the materialized blob.
+ *
+ * `mode: "replay"` (default) is offline/reproducible. `mode: "hybrid"` adds a LIVE
+ * fallback: on a recording miss, an `host.mcp` call whose tool has a live adapter
+ * is dispatched to the real public API the CS bundled tool wraps (e.g. query_genes
+ * → mygene.info). Reproduce the sealed run exactly, extend it with live data only
+ * where the recording has no answer.
+ */
+export function buildHostShim(
+  hostCallsPath: string,
+  opts?: { mode?: "replay" | "hybrid" },
+): string {
+  const p = JSON.stringify(hostCallsPath);
+  const hybrid = opts?.mode === "hybrid";
+  // Live adapters: (mcp tool) → the public API the CS bundled tool wraps. stdlib
+  // only (urllib) so it runs in the papermill env. Extensible per tool.
+  const liveAdapters = hybrid
+    ? [
+      "def _live_query_genes(params):",
+      "    import urllib.request as _u, urllib.parse as _up",
+      "    _body = _up.urlencode({'q': ','.join(params.get('terms', [])), 'scopes': params.get('scopes', 'symbol'), 'fields': params.get('fields', 'symbol,name,entrezgene,ensembl.gene,map_location'), 'species': params.get('species', 'human')}).encode()",
+      "    return {'records': _json.load(_u.urlopen(_u.Request('https://mygene.info/v3/query', data=_body), timeout=30))}",
+      "_LIVE = {'query_genes': _live_query_genes}",
+    ]
+    : [];
+  return [
+    "import json as _json, os as _os",
+    "class UnrecordedHostCall(Exception): pass",
+    ...liveAdapters,
+    "class _HostReplay:",
+    "    def __init__(self, path):",
+    "        self._by = {}",
+    "        for _c in _json.load(open(path)):",
+    "            self._by.setdefault(self._key(_c['method'], _c['args']), []).append(_c)",
+    "        self._n = {}",
+    "        # artifact_path returns a machine-local path (recorded response is null);",
+    "        # resolve it to the MATERIALIZED artifact via an index the driver writes.",
+    "        self._art = {}",
+    "        _ai = _os.path.join(_os.path.dirname(path) or '.', 'artifact_index.json')",
+    "        if _os.path.exists(_ai): self._art = _json.load(open(_ai))",
+    "    def _key(self, method, args):",
+    "        a = list(args)",
+    "        if a and isinstance(a[-1], dict) and not a[-1]:",
+    "            a = a[:-1]  # mcp records a trailing params dict; a no-kwargs call omits it",
+    "        return _json.dumps([method, a], sort_keys=True, separators=(',', ':'))",
+    "    def __getattr__(self, method):",
+    "        def _call(*args, **kwargs):",
+    "            if method == 'artifact_path' and args and str(args[0]) in self._art:",
+    "                return self._art[str(args[0])]",
+    "            a = list(args) + ([kwargs] if kwargs else [])",
+    "            k = self._key(method, a)",
+    "            bucket = self._by.get(k)",
+    "            if not bucket:",
+    ...(hybrid
+      ? [
+        "                if method == 'mcp' and len(a) >= 2 and a[1] in _LIVE:",
+        "                    return _LIVE[a[1]](a[2] if len(a) > 2 else {})",
+      ]
+      : []),
+    "                raise UnrecordedHostCall(method, a)",
+    "            i = self._n.get(k, 0); self._n[k] = i + 1",
+    "            rec = bucket[min(i, len(bucket) - 1)]",
+    "            if rec.get('isError'):",
+    "                raise RuntimeError(rec.get('error') or ('recorded host error: ' + method))",
+    "            if isinstance(rec.get('response'), dict) and '__ref__' in rec['response']:",
+    "                return _json.load(open(rec['response']['__ref__']))",
+    "            return rec.get('response')",
+    "        return _call",
+    `host = _HostReplay(${p})`,
+  ].join("\n");
+}
+
+/** An nbformat code cell whose source is `src`. */
+function codeCell(src: string): Record<string, unknown> {
+  // nbformat stores source as a list of lines, each terminated by \n except the
+  // last — split preserving that convention.
+  const parts = src.split("\n");
+  const source = parts.map((l, i) => (i < parts.length - 1 ? l + "\n" : l));
+  return {
+    cell_type: "code",
+    metadata: {},
+    execution_count: null,
+    outputs: [],
+    source,
+  };
+}
+
+/**
+ * Append the generated verify cell as the LAST code cell of a filled `.ipynb`,
+ * preserving every existing cell and the nbformat envelope. Throws on anything
+ * that is not a notebook (no `cells` array).
+ */
+export function assembleNotebook(
+  filledIpynb: string,
+  verifyCellSrc: string,
+): string {
+  const nb = JSON.parse(filledIpynb) as { cells?: unknown[] };
+  if (!nb || !Array.isArray(nb.cells)) {
+    throw new Error(
+      "assembleNotebook: input is not a notebook (missing a `cells` array)",
+    );
+  }
+  nb.cells.push(codeCell(verifyCellSrc));
+  return JSON.stringify(nb);
+}
+
+/** Prepend `src` as the FIRST code cell of a notebook (e.g. the host-replay shim). */
+export function prependCell(ipynb: string, src: string): string {
+  const nb = JSON.parse(ipynb) as { cells?: unknown[] };
+  if (!nb || !Array.isArray(nb.cells)) {
+    throw new Error(
+      "prependCell: input is not a notebook (missing a `cells` array)",
+    );
+  }
+  nb.cells.unshift(codeCell(src));
+  return JSON.stringify(nb);
+}
+
+/** Grace period between SIGTERM and SIGKILL when a docker run times out. */
+const GRACE_MS = 2_000;
+
+/**
+ * Spawn `docker <args>`, enforce a wall timeout (SIGTERM→SIGKILL), and return the
+ * captured output. No stdin (papermill reads the notebook file from the mount).
+ * Mirrors replay.ts's runRDocker timeout handling; kept self-contained so the
+ * merged replay path is untouched.
+ */
+async function spawnDockerRun(
+  args: string[],
+  timeoutMs: number,
+): Promise<
+  { stdout: string; stderr: string; code: number; timedOut: boolean }
+> {
+  const child = new Deno.Command("docker", {
+    args,
+    stdout: "piped",
+    stderr: "piped",
+    env: { COLUMNS: "80", LINES: "24" },
+  }).spawn();
+
+  let timedOut = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      child.kill("SIGTERM");
+    } catch { /* exited */ }
+    killTimer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch { /* exited */ }
+    }, GRACE_MS);
+  }, timeoutMs);
+
+  let out: Deno.CommandOutput;
+  try {
+    out = await child.output();
+  } finally {
+    clearTimeout(timer);
+    if (killTimer !== undefined) clearTimeout(killTimer);
+  }
+  const dec = new TextDecoder();
+  return {
+    stdout: dec.decode(out.stdout),
+    stderr: dec.decode(out.stderr),
+    code: out.code,
+    timedOut,
+  };
+}
+
+/**
+ * Run a notebook headless via papermill in the locked micromamba env. `workdir`
+ * is bind-mounted to `/work`, so `<inName>` (the assembled notebook) is read from
+ * there and papermill writes `<outName>` + the verify TSV back to the host.
+ * `env` must provide papermill (see the design's papermill-availability note).
+ */
+export function runPapermillDocker(
+  image: string,
+  env: string,
+  workdir: string,
+  inName: string,
+  outName: string,
+  timeoutMs: number,
+  kernel = "python3",
+): Promise<
+  { stdout: string; stderr: string; code: number; timedOut: boolean }
+> {
+  return spawnDockerRun([
+    "run",
+    "--rm",
+    "-v",
+    `${workdir}:/work`,
+    "-w",
+    "/work",
+    image,
+    "micromamba",
+    "run",
+    "-n",
+    env,
+    "papermill",
+    `/work/${inName}`,
+    `/work/${outName}`,
+    // The assembled notebook has no kernelspec metadata, so papermill needs an
+    // explicit kernel; ipykernel's default in the locked env is `python3`.
+    "-k",
+    kernel,
+  ], timeoutMs);
+}
+
+/** One judged return read back from the verify TSV. */
+export interface ReturnVerdict {
+  name: string;
+  ok: boolean;
+  observed: string;
+}
+
+/** Parse the verify TSV (`name\tTRUE|FALSE\t<observed>` per line); blanks ignored. */
+export function parsePyVerdict(tsv: string): ReturnVerdict[] {
+  return tsv
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => {
+      const [name, ok, observed = ""] = l.split("\t");
+      return { name, ok: ok === "TRUE", observed };
+    });
+}
+
+/** Read a notebook's `metadata.swamp.returns` contract (empty if absent). */
+async function readNotebookReturns(
+  path: string,
+): Promise<Record<string, PyReturnSpec>> {
+  const nb = JSON.parse(await Deno.readTextFile(path)) as {
+    metadata?: { swamp?: { returns?: Record<string, PyReturnSpec> } };
+  };
+  return nb.metadata?.swamp?.returns ?? {};
+}
+
+export const RunNotebookArgsSchema = z.object({
+  /** Path to the filled .ipynb to run (params filled, body frozen). */
+  filledPath: z.string().min(1),
+  /** Optional path to the ORIGINAL template to read `swamp.returns` from (governance). */
+  templatePath: z.string().default(""),
+  /** The locked Docker image (from the session-ingest Docker lock). */
+  image: z.string().min(1),
+  /** micromamba env inside the image that provides papermill + the analysis stack. */
+  env: z.string().default("base"),
+  /** Working dir bind-mounted to /work (holds in/out.ipynb + verify.tsv). Default temp. */
+  workdir: z.string().default(""),
+  /** Jupyter kernel papermill runs the notebook with (ipykernel default: python3). */
+  kernel: z.string().default("python3"),
+  /** Path to a captured host-calls JSON; if set, prepend a host-replay shim. */
+  hostCallsPath: z.string().default(""),
+  /** Host shim mode: "replay" (offline/reproducible) or "hybrid" (live fallback on a miss). */
+  hostMode: z.enum(["replay", "hybrid"]).default("replay"),
+});
+
+/** The docker runner shape (real = runPapermillDocker; injected in unit tests). */
+type DockerRunner = (
+  image: string,
+  env: string,
+  workdir: string,
+  inName: string,
+  outName: string,
+  timeoutMs: number,
+  kernel: string,
+) => Promise<
+  { stdout: string; stderr: string; code: number; timedOut: boolean }
+>;
+
+/**
+ * The `run-notebook` method: assemble the filled notebook + the verify cell, run
+ * it headless via papermill in the locked micromamba/Docker env, and judge the
+ * fresh run against the template's `swamp.returns`. Writes an `execution` record
+ * (`ExecResult` shape). Injected `_runDocker`/`_now` keep it unit-testable.
+ */
+export async function runNotebook(
+  args: z.input<typeof RunNotebookArgsSchema> & {
+    _runDocker?: DockerRunner;
+    _now?: () => string;
+  },
+  context: {
+    globalArgs?: { timeoutMs?: number };
+    writeResource: (
+      s: string,
+      i: string,
+      d: unknown,
+    ) => Promise<{ version: number }>;
+    logger: { info: (m: string, p?: Record<string, unknown>) => void };
+  },
+): Promise<{ dataHandles: unknown[] }> {
+  const now = args._now ?? (() => new Date().toISOString());
+  const runDocker = args._runDocker ?? runPapermillDocker;
+  const timeoutMs = context.globalArgs?.timeoutMs ?? 300_000;
+  const env = args.env ?? "base";
+
+  // Contract from the template (governance) if given, else the filled notebook.
+  const returns = await readNotebookReturns(
+    args.templatePath || args.filledPath,
+  );
+
+  const workdir = args.workdir ||
+    await Deno.makeTempDir({ prefix: "swamp-nb-" });
+  const verifyCell = buildVerifyCell(returns, "/work/verify.tsv");
+  let assembled = assembleNotebook(
+    await Deno.readTextFile(args.filledPath),
+    verifyCell,
+  );
+  // If host calls were captured, materialize them into the workdir and prepend a
+  // generic host-replay shim as the first cell (so host.* calls replay recordings).
+  if (args.hostCallsPath) {
+    const dest = `${workdir}/host_calls.json`;
+    // Guard against a self-copy (caller may pass a path already at dest), which
+    // would truncate the file.
+    if (
+      await Deno.realPath(args.hostCallsPath).catch(() =>
+        args.hostCallsPath
+      ) !==
+        await Deno.realPath(dest).catch(() => dest)
+    ) {
+      await Deno.copyFile(args.hostCallsPath, dest);
+    }
+    assembled = prependCell(
+      assembled,
+      buildHostShim("/work/host_calls.json", {
+        mode: args.hostMode ?? "replay",
+      }),
+    );
+  }
+  await Deno.writeTextFile(`${workdir}/in.ipynb`, assembled);
+
+  const run = await runDocker(
+    args.image,
+    env,
+    workdir,
+    "in.ipynb",
+    "out.ipynb",
+    timeoutMs,
+    args.kernel ?? "python3",
+  );
+  const verdicts = parsePyVerdict(
+    await Deno.readTextFile(`${workdir}/verify.tsv`).catch(() => ""),
+  );
+  const ranOk = run.code === 0 && !run.timedOut;
+  const valid = ranOk && verdicts.length > 0 && verdicts.every((v) => v.ok);
+
+  const result = {
+    template: args.templatePath ?? "",
+    filled: args.filledPath,
+    status: ranOk ? "ok" : "error",
+    valid,
+    returns: verdicts.map((v) => ({
+      name: v.name,
+      bind: returns[v.name]?.bind ?? v.name,
+      ok: v.ok,
+      observedClass: v.observed,
+      expected: returns[v.name]?.isinstance ?? "",
+    })),
+    chunks: 0,
+    recorderArmed: false,
+    stdout: run.stdout,
+    stderr: run.stderr,
+    timestamp: now(),
+  };
+
+  const inst =
+    args.filledPath.split("/").pop()?.replace(/[^A-Za-z0-9_-]/g, "_") ??
+      "notebook";
+  const handle = await context.writeResource("execution", inst, result);
+  context.logger.info(
+    "run-notebook {filled}: valid={valid} ({n} returns)",
+    { filled: args.filledPath, valid, n: verdicts.length },
+  );
+  return { dataHandles: [handle] };
+}
