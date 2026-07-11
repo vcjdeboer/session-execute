@@ -149,6 +149,36 @@ Deno.test("buildHostShim hybrid mode registers the bio live adapters + endpoints
   assert(!buildHostShim("/work/x.json").includes("alphafold.ebi.ac.uk"));
 });
 
+Deno.test("buildHostShim cascade-breaker: uncaptured artifact_path -> named nonexistent path, not None", () => {
+  const cell = buildHostShim("/work/host_calls.json");
+  // a miss returns a NAMED sentinel path (→ clear FileNotFoundError), never falls through to null
+  assert(cell.includes("_unresolved_artifact_"));
+  assert(cell.includes("if _aid in self._art: return self._art[_aid]"));
+});
+
+Deno.test("buildHostShim wires CS-DB introspection (query over local execution_log)", () => {
+  // present in BOTH modes (offline/deterministic, unlike the live MCP adapters)
+  for (
+    const cell of [
+      buildHostShim("/work/host_calls.json"),
+      buildHostShim("/work/host_calls.json", { mode: "hybrid" }),
+    ]
+  ) {
+    assert(
+      cell.includes("import json as _json, os as _os, sqlite3 as _sqlite"),
+    );
+    assert(cell.includes("execution_log.json")); // driver-provided rebuilt table
+    assert(cell.includes("CREATE TABLE execution_log"));
+    // host.query() aliases to the recorded query_db method
+    assert(cell.includes("'query_db' if method in ('query', 'query_db')"));
+    // Tier-2: run the self-query locally on a recording miss
+    assert(cell.includes("self._run_query(a)"));
+    assert(
+      cell.includes("method in ('query', 'query_db') and self._db is not None"),
+    );
+  }
+});
+
 Deno.test("parsePyVerdict parses ok/fail rows and ignores blanks", () => {
   const v = parsePyVerdict(
     "fit\tTRUE\tLinearRegression\nmissing\tFALSE\t<unresolved>\n\n",
