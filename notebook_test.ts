@@ -129,6 +129,26 @@ Deno.test("buildHostShim hybrid mode adds a live fallback on a recording miss", 
   assert(cell.indexOf("_LIVE") < cell.lastIndexOf("host = "));
 });
 
+Deno.test("buildHostShim hybrid mode registers the bio live adapters + endpoints", () => {
+  const cell = buildHostShim("/work/host_calls.json", { mode: "hybrid" });
+  // each tool is both defined and wired into the _LIVE registry
+  for (
+    const tool of [
+      "query_genes",
+      "alphafold_check_coverage",
+      "pdb_search_structures",
+    ]
+  ) {
+    assert(cell.includes(`_live_${tool}`), `missing adapter fn for ${tool}`);
+    assert(cell.includes(`'${tool}':`), `missing _LIVE entry for ${tool}`);
+  }
+  // public endpoints (stdlib urllib only — runs in the papermill env)
+  assert(cell.includes("alphafold.ebi.ac.uk/api/prediction/"));
+  assert(cell.includes("search.rcsb.org/rcsbsearch/v2/query"));
+  // replay mode still has NO adapters
+  assert(!buildHostShim("/work/x.json").includes("alphafold.ebi.ac.uk"));
+});
+
 Deno.test("parsePyVerdict parses ok/fail rows and ignores blanks", () => {
   const v = parsePyVerdict(
     "fit\tTRUE\tLinearRegression\nmissing\tFALSE\t<unresolved>\n\n",

@@ -112,7 +112,31 @@ export function buildHostShim(
       "    import urllib.request as _u, urllib.parse as _up",
       "    _body = _up.urlencode({'q': ','.join(params.get('terms', [])), 'scopes': params.get('scopes', 'symbol'), 'fields': params.get('fields', 'symbol,name,entrezgene,ensembl.gene,map_location'), 'species': params.get('species', 'human')}).encode()",
       "    return {'records': _json.load(_u.urlopen(_u.Request('https://mygene.info/v3/query', data=_body), timeout=30))}",
-      "_LIVE = {'query_genes': _live_query_genes}",
+      // AlphaFold coverage: one GET per accession to the public EBI prediction API,
+      // rebuilt into the recorded {n_unique, records:[{uniprot_accession, has_model,...}]} shape.
+      "def _live_alphafold_check_coverage(params):",
+      "    import urllib.request as _u",
+      "    accs = params.get('uniprot_accessions') or ([params['uniprot_id']] if params.get('uniprot_id') else [])",
+      "    recs = []",
+      "    for _acc in accs:",
+      "        try:",
+      "            _m = _json.load(_u.urlopen('https://alphafold.ebi.ac.uk/api/prediction/' + _acc, timeout=30))",
+      "            recs.append({'uniprot_accession': _acc, 'has_model': bool(_m), 'n_models': len(_m), 'model_entity_id': (_m[0].get('entryId') if _m else None), 'latest_version': (_m[0].get('latestVersion') if _m else None)})",
+      "        except Exception:",
+      "            recs.append({'uniprot_accession': _acc, 'has_model': False, 'n_models': 0, 'model_entity_id': None, 'latest_version': None})",
+      "    return {'n_unique': len(accs), 'n_blank_skipped': 0, 'n_duplicate_skipped': 0, 'not_processed': [], 'records': recs}",
+      // PDB structure search: RCSB full-text (or uniprot) search → recorded {results:[id...], total}.
+      "def _live_pdb_search_structures(params):",
+      "    import urllib.request as _u, urllib.parse as _up",
+      "    _crit = params.get('uniprot_accession') or params.get('query')",
+      "    if not _crit: return {'results': [], 'total': 0}",
+      "    _q = {'query': {'type': 'terminal', 'service': 'full_text', 'parameters': {'value': str(_crit)}}, 'return_type': 'polymer_entity', 'request_options': {'paginate': {'start': 0, 'rows': int(params.get('limit', 10))}}}",
+      "    try:",
+      "        _r = _json.load(_u.urlopen(_u.Request('https://search.rcsb.org/rcsbsearch/v2/query?json=' + _up.quote(_json.dumps(_q))), timeout=30))",
+      "        return {'results': [x.get('identifier') for x in _r.get('result_set', [])], 'total': _r.get('total_count', 0)}",
+      "    except Exception:",
+      "        return {'results': [], 'total': 0}",
+      "_LIVE = {'query_genes': _live_query_genes, 'alphafold_check_coverage': _live_alphafold_check_coverage, 'pdb_search_structures': _live_pdb_search_structures}",
     ]
     : [];
   return [

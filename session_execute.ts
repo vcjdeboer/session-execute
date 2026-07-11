@@ -189,8 +189,18 @@ function cap(s: string): string {
 /** The session-execute model definition. */
 export const model = {
   type: "@vcjdeboer/session-execute",
-  version: "2026.07.09.5",
+  version: "2026.07.11.1",
   globalArguments: GlobalArgsSchema,
+  // No globalArguments change; .11.1 only adds alphafold + pdb live-MCP adapters
+  // to the hybrid host shim (notebook.ts). No-op upgrade advances typeVersion.
+  upgrades: [
+    {
+      toVersion: "2026.07.11.1",
+      description:
+        "Hybrid host shim gains alphafold_check_coverage + pdb_search_structures live-MCP adapters; no globalArguments change.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "execution": {
       description:

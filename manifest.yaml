@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@vcjdeboer/session-execute"
-version: "2026.07.09.5"
+version: "2026.07.11.1"
 description: "The headless runtime of the session-* suite. Runs a filled analysis template — R/qmd in a pinned nix R env (`run`), a targets pipeline via a harvester (`run-targets`), or Python/ipynb via papermill in the locked conda/Docker env (`run-notebook`) — with the recorder armed or a swamp.returns contract verified. Also faithfully REPLAYS a captured session: `replay` re-runs recorded R against frozen tolerance rules (nix preferred, docker fallback), and the Python host-replay shim serves a captured session's host.* calls offline (or falls through to the live API in hybrid mode). Reproduce a governed run — or a foreign Claude Science session — deterministically."
 repository: "https://github.com/vcjdeboer/session-execute"
 
