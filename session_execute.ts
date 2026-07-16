@@ -189,7 +189,7 @@ function cap(s: string): string {
 /** The session-execute model definition. */
 export const model = {
   type: "@vcjdeboer/session-execute",
-  version: "2026.07.11.2",
+  version: "2026.07.16.1",
   globalArguments: GlobalArgsSchema,
   // No globalArguments change; .11.1/.11.2 only touch the host shim (notebook.ts).
   upgrades: [
@@ -203,6 +203,12 @@ export const model = {
       toVersion: "2026.07.11.2",
       description:
         "Host shim: CS-DB introspection (host.query over a local execution_log) + artifact_path cascade-breaker; no globalArguments change.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.16.1",
+      description:
+        "Docs-only: benefit-led manifest description (lead with reproduce-a-run / replay-a-foreign-session). No code or globalArguments change.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
