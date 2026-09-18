@@ -47,7 +47,13 @@ export { type GlobalArgs, GlobalArgsSchema, runRStdin };
 
 const RunArgsSchema = z.object({
   /** Path to the filled template .qmd to run (params filled, body frozen). */
-  filledPath: z.string().min(1),
+  filledPath: z.string().default(""),
+  /**
+   * Alternative to filledPath: pass the file content directly as a string.
+   * Useful in workflows where data.latest().content works but data.latest().path
+   * does not (swamp #2288). Session-execute writes it to a temp .qmd file.
+   */
+  filledContent: z.string().default(""),
   /**
    * Optional path to the ORIGINAL template, to read the `swamp.returns` contract
    * from (governance: the contract comes from the template, not the fill). When
@@ -189,9 +195,8 @@ function cap(s: string): string {
 /** The session-execute model definition. */
 export const model = {
   type: "@vcjdeboer/session-execute",
-  version: "2026.07.16.1",
+  version: "2026.09.18.3",
   globalArguments: GlobalArgsSchema,
-  // No globalArguments change; .11.1/.11.2 only touch the host shim (notebook.ts).
   upgrades: [
     {
       toVersion: "2026.07.11.1",
@@ -206,9 +211,21 @@ export const model = {
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
     {
-      toVersion: "2026.07.16.1",
+      toVersion: "2026.09.18.1",
       description:
-        "Docs-only: benefit-led manifest description (lead with reproduce-a-run / replay-a-foreign-session). No code or globalArguments change.",
+        "README: add workflow-usage and result-shape examples (rich-readme quality factor).",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.18.2",
+      description:
+        "Silent-failure fix: run method now throws on error instead of writing a misleading execution resource.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.09.18.3",
+      description:
+        "run accepts filledContent as alternative to filledPath — workaround for data.latest() missing .path on file-kind data (#2288).",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -255,7 +272,26 @@ export const model = {
         },
       ): Promise<{ dataHandles: unknown[] }> => {
         const g = context.globalArgs;
-        const filledText = await Deno.readTextFile(args.filledPath);
+
+        // Resolve filled path: direct path or from content string (#2288 workaround)
+        let filledPath = args.filledPath;
+        let tempFilledPath = "";
+        if (!filledPath && args.filledContent) {
+          tempFilledPath = await Deno.makeTempFile({ suffix: ".qmd" });
+          await Deno.writeTextFile(tempFilledPath, args.filledContent);
+          filledPath = tempFilledPath;
+          context.logger.info(
+            "Materialized filled template from content ({len} chars) -> {path}",
+            { len: args.filledContent.length, path: filledPath },
+          );
+        }
+        if (!filledPath) {
+          throw new Error(
+            "Provide either filledPath or filledContent",
+          );
+        }
+
+        const filledText = await Deno.readTextFile(filledPath);
         const { yaml: filledYaml, body } = splitQmd(filledText);
         const fm = (parseYaml(filledYaml) ?? {}) as {
           params?: Record<string, unknown>;
@@ -303,7 +339,7 @@ export const model = {
           "Running {n} chunk(s) of {filled} headless in {ref} (recorder -> {def})",
           {
             n: chunks.length,
-            filled: args.filledPath,
+            filled: filledPath,
             ref: `${g.flakeRef}#${g.rPackage}`,
             def: g.recordDef,
           },
@@ -312,6 +348,7 @@ export const model = {
         const r = await runRStdin(g, driver);
         if (r.timedOut) {
           await Deno.remove(verifyPath).catch(() => {});
+          if (tempFilledPath) await Deno.remove(tempFilledPath).catch(() => {});
           throw new Error(`session-execute timed out after ${g.timeoutMs}ms`);
         }
 
@@ -354,9 +391,22 @@ export const model = {
         const valid = returnResults.length > 0 &&
           returnResults.every((x) => x.ok);
 
+        // Fail the method on error — do NOT write a resource, so consumers
+        // that check resource existence don't mistake a failed run for success.
+        if (status === "error") {
+          if (tempFilledPath) await Deno.remove(tempFilledPath).catch(() => {});
+          const detail = r.code !== 0
+            ? `R exited ${r.code}`
+            : "verification epilogue did not run";
+          throw new Error(
+            `session-execute error (${detail}), ${chunks.length} chunks. ` +
+              `stderr: ${cap(r.stderr).slice(0, 500)}`,
+          );
+        }
+
         const handle = await context.writeResource("execution", "result", {
           template: args.templatePath,
-          filled: args.filledPath,
+          filled: filledPath,
           status,
           valid,
           returns: returnResults,
@@ -377,6 +427,9 @@ export const model = {
             chunks: chunks.length,
           },
         );
+        if (tempFilledPath) {
+          await Deno.remove(tempFilledPath).catch(() => {});
+        }
         return { dataHandles: [handle] };
       },
     },

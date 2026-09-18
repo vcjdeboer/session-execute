@@ -25,6 +25,41 @@ mode, falls through to the *live* public API a Claude Science tool wraps (e.g.
 `query_genes → mygene.info`) only for calls the recording can't answer. So a
 Claude Science analysis can be reproduced *exactly*, or *extended* with live data.
 
+## Workflow usage
+
+Wire session-execute into a workflow step that follows a session-write `fill`.
+Pass the file path (deprecated CEL pattern) or its content (`data.latest`,
+workaround for [#2288](https://swamp-club.com/lab/2288)):
+
+```yaml
+- name: execute
+  task:
+    type: model_method
+    modelType: "@vcjdeboer/session-execute"
+    modelName: executor
+    methodName: run
+    inputs:
+      # option A — deprecated CEL path pattern (works today)
+      filledPath: ${{ model.writer.file.filled.filled.path }}
+      # option B — data.latest content (no .path needed)
+      # filledContent: ${{ data.latest("writer", "filled").content }}
+```
+
+The `run` method returns a typed `execution` resource with `status` ("ok" or
+"error"), `valid` (contract held), and per-return verification results:
+
+```json
+{
+  "status": "ok",
+  "valid": true,
+  "returns": [
+    { "name": "fit", "ok": true, "observedClass": "lm", "expected": "inherits lm" }
+  ],
+  "chunks": 4,
+  "recorderArmed": true
+}
+```
+
 ## Install
 
 ```sh
